@@ -1,220 +1,251 @@
-Pruebas para aprendizaje con interaccion Rust y Neo4j con Axum y D3
+Pruebas de concepto usando Rust, Axum, Neo4j y D3
 
-# Movies • Neo4j Demo (Axum + Neo4j + D3)
+# Movies • Axum + Neo4j (Bolt) + D3
 
-Aplicación full-stack en **Rust** que expone una API HTTP con **Axum** y visualiza un grafo de películas y personas desde **Neo4j**.
-Incluye **métricas Prometheus**, **healthcheck**, UI estática con **Tailwind + Alpine**, y grafo interactivo con **D3** (con propiedades de cada nodo).
+Demo full-stack en Rust que expone una API HTTP (Axum) contra Neo4j (driver `neo4rs`) y un frontend estático con **D3** para explorar el grafo de películas/personas.
+Incluye **Prometheus metrics**, **tracing**, **CORS**, **compresión**, **timeouts**, **request ids** y **Swagger UI** generado con **`utoipa`**.
 
 ---
 
-## 🚀 Stack
+## ✨ Novedades (últimas mejoras)
 
-* **Backend**: \[Axum 0.7], \[tokio], \[tower-http], \[tracing], \[color-eyre]
-* **DB**: \[neo4rs] (Bolt/TLS)
-* **Métricas**: \[metrics-exporter-prometheus], \[axum-prometheus]
-* **Frontend**: HTML estático (CDN) con **TailwindCSS**, **Alpine.js**, **D3.js**
-* **TLS**: rustls 0.23 con **ring** (provider instalado en `main.rs`)
+* **Swagger/OpenAPI** con [`utoipa`](https://docs.rs/utoipa) y UI en **`/docs`** (OpenAPI JSON en **`/api-docs/openapi.json`**).
+* Frontend (`assets/index.html`) renovado:
 
-> Por defecto se conecta a `neo4j+s://demo.neo4jlabs.com` (DB pública de ejemplo “movies”).
+  * Visualización de **grafo interactivo** (D3) con zoom, pan, flechas y etiquetas de relación opcionales.
+  * **Panel de propiedades** por nodo: muestra **todas las propiedades** (`props`) devueltas por la API, con copia a portapapeles y JSON expandible.
+  * Filtros dinámicos por **tipo de relación** (checkboxes, “Todas/Ninguna”), **profundidad** desde la selección (BFS), **distancia de enlaces**, atenuación de no-vecinos y **leyendas** de colores.
+  * **Atajos**: `G` refrescar grafo, `/` enfocar búsqueda, **Enter** busca, **doble clic** en película abre detalle.
+  * Tema **dark/light** (Tailwind + Alpine).
+* **TLS**: Rustls 0.23 con **ring provider** inicializado en `main.rs` para evitar el pánico por proveedor no seleccionado.
+* **Observabilidad**:
+
+  * **/metrics** (Prometheus) vía `axum-prometheus` + `metrics-exporter-prometheus`.
+  * **TraceLayer** con `tracing` y `tracing-error`.
+* **Endpoints**: `/search`, `/movie/:title`, `/movie/vote/:title`, `/graph`, `/health`, `/metrics`, `/docs`.
 
 ---
 
 ## 📦 Requisitos
 
-* **Rust** estable (Edition 2021).
-  Instala con `rustup` si no lo tienes.
-* **No necesitas Node** ni toolchain frontend: el HTML usa CDN.
-* (Opcional) **Neo4j** propio. Si no configuras nada, la app usa el demo público.
+* **Rust** 1.75+ (recomendado `rustup` estable)
+* **Neo4j** accesible por Bolt+TLS (por defecto usa el *demo* público)
 
 ---
 
-## ⚙️ Configuración
+## ⚙️ Configuración (variables de entorno)
 
-Variables de entorno (todas tienen default razonable):
+| Variable               | Default                        | Descripción                    |
+| ---------------------- | ------------------------------ | ------------------------------ |
+| `PORT`                 | `8080`                         | Puerto del servidor HTTP       |
+| `NEO4J_URI`            | `neo4j+s://demo.neo4jlabs.com` | URI Bolt+TLS                   |
+| `NEO4J_USER`           | `movies`                       | Usuario de Neo4j               |
+| `NEO4J_PASSWORD`       | `movies`                       | Password de Neo4j              |
+| `NEO4J_DATABASE`       | `movies`                       | Base de datos                  |
+| `REQUEST_TIMEOUT_SECS` | `20`                           | Timeout por petición           |
+| `MAX_CONCURRENCY`      | `512`                          | Límite de concurrencia (Tower) |
+| `MAX_BODY_BYTES`       | `1048576`                      | Límite de tamaño de body       |
 
-| Variable               | Default                        | Descripción                        |
-| ---------------------- | ------------------------------ | ---------------------------------- |
-| `NEO4J_URI`            | `neo4j+s://demo.neo4jlabs.com` | URI Bolt (con o sin TLS)           |
-| `NEO4J_USER`           | `movies`                       | Usuario Neo4j                      |
-| `NEO4J_PASSWORD`       | `movies`                       | Password Neo4j                     |
-| `NEO4J_DATABASE`       | `movies`                       | Base de datos                      |
-| `PORT`                 | `8080`                         | Puerto de escucha                  |
-| `REQUEST_TIMEOUT_SECS` | `20`                           | Timeout de solicitud               |
-| `MAX_CONCURRENCY`      | `512`                          | Límite server-side de concurrencia |
-| `MAX_BODY_BYTES`       | `1048576`                      | Límite de tamaño de body           |
-
-Ejemplo `.env`:
-
-```bash
-NEO4J_URI=neo4j+s://demo.neo4jlabs.com
-NEO4J_USER=movies
-NEO4J_PASSWORD=movies
-NEO4J_DATABASE=movies
-PORT=8080
-```
-
-> Si usas Neo4j local sin TLS, puedes usar `NEO4J_URI=bolt://localhost:7687`.
+> **Nota**: CORS está abierto (`Any`) para facilitar pruebas.
 
 ---
 
-## ▶️ Ejecutar
+## 🚀 Ejecución local
 
 ```bash
-# Compilar en release y ejecutar
+# 1) Clonar e instalar dependencias
+cargo build --release
+
+# 2) (opcional) Exportar configuración
+export NEO4J_URI="neo4j+s://demo.neo4jlabs.com"
+export NEO4J_USER="movies"
+export NEO4J_PASSWORD="movies"
+export NEO4J_DATABASE="movies"
+export PORT=8080
+
+# 3) Lanzar
 cargo run --release
 ```
 
-Salida esperada:
+Abre:
 
-```
-listening on 0.0.0.0:8080
-```
-
-Abre el navegador en: **[http://localhost:8080/index.html](http://127.0.0.1:8080/index.html)**
-
-> El provider de crypto **ring** para `rustls` se **instala al inicio** del `main()` (Opción A). Esto evita el pánico de “Could not automatically determine the process-level CryptoProvider”.
+* **Frontend**: [http://localhost:8080/](http://localhost:8080/)
+* **Swagger UI**: [http://localhost:8080/docs](http://localhost:8080/docs)
+* **OpenAPI JSON**: [http://localhost:8080/api-docs/openapi.json](http://localhost:8080/api-docs/openapi.json)
+* **Métricas Prometheus**: [http://localhost:8080/metrics](http://localhost:8080/metrics)
+* **Healthcheck**: [http://localhost:8080/health](http://localhost:8080/health)
 
 ---
 
-## 🧭 Endpoints
+## 🧭 Endpoints principales
 
-* `GET /` → redirige a `/index.html` (UI)
-* `GET /health` → Healthcheck (`ok` cuando todo va bien)
-* `GET /metrics` → Métricas Prometheus (scrapeable)
-* `GET /search?q=&offset=&limit=` → Búsqueda por título (paginada)
-* `GET /movie/:title` → Detalle de película (título exacto)
-* `POST /movie/vote/:title` → Incrementa votos de la película
-* `GET /graph?…` → Subgrafo con filtros (ver parámetros)
+| Método | Ruta                        | Descripción                                 |
+| -----: | --------------------------- | ------------------------------------------- |
+|    GET | `/search?q=&offset=&limit=` | Búsqueda de películas por título (contains) |
+|    GET | `/movie/:title`             | Detalle de película                         |
+|   POST | `/movie/vote/:title`        | Incrementa el contador `votes`              |
+|    GET | `/graph?limit=`…            | Muestra subgrafo con filtros (ver abajo)    |
+|    GET | `/health`                   | Ping a la DB (`RETURN 1 AS ok`)             |
+|    GET | `/metrics`                  | Exporter Prometheus                         |
+|    GET | `/docs`                     | Swagger UI                                  |
 
-### Parámetros de `/graph`
+### Parámetros `/graph` (query)
 
-| Parámetro      | Tipo       | Ejemplo                    | Descripción                                    |
-| -------------- | ---------- | -------------------------- | ---------------------------------------------- |
-| `limit`        | number     | `200`                      | Máx. relaciones devueltas (1..1000)            |
-| `rel`          | CSV string | `ACTED_IN,DIRECTED`        | Filtro por tipos de relación (si vacío, todas) |
-| `root`         | string     | `Tom Hanks` \| `Apollo 13` | Nodo raíz (Person.name o Movie.title)          |
-| `depth`        | number     | `2`                        | Profundidad desde `root` (1..6)                |
-| `node_incl`    | CSV string | `Movie,Person`             | Solo etiquetas incluidas                       |
-| `node_excl`    | CSV string | `User,Company`             | Excluir etiquetas                              |
-| `released_gte` | number     | `1990`                     | Año de película (mínimo, inclusive)            |
-| `released_lte` | number     | `2005`                     | Año de película (máximo, inclusive)            |
+* `limit`: límite de aristas devueltas (1..1000, default 200)
+* `rel`: CSV de tipos de relación (e.g. `ACTED_IN,DIRECTED`)
+* `root`: nodo raíz (`Movie.title` o `Person.name`)
+* `depth`: profundidad BFS (1..6) cuando hay `root`
+* `node_incl`: CSV de etiquetas de nodos a **incluir** (`Movie,Person`)
+* `node_excl`: CSV de etiquetas de nodos a **excluir**
+* `released_gte` / `released_lte`: filtros por año en nodos `Movie`
 
 **Respuesta**:
 
-```json
+```jsonc
 {
-  "nodes": [
-    { "title": "Apollo 13", "label": "movie", "props": { "title": "Apollo 13", "released": 1995, "tagline": "...", "votes": 123 } },
-    { "title": "Tom Hanks", "label": "person", "props": { "name": "Tom Hanks" } }
+  "nodes":[
+    { "title":"The Matrix", "label":"movie", "props": { "title":"The Matrix", "released":1999, ... } },
+    { "title":"Keanu Reeves", "label":"person", "props": { "name":"Keanu Reeves", ... } }
   ],
-  "links": [
-    { "source": 0, "target": 1, "rel": "ACTED_IN" }
+  "links":[
+    { "source":0, "target":1, "rel":"ACTED_IN" }
   ]
 }
 ```
 
-> Cada **nodo** incluye `props` con **todas las propiedades** devueltas por Neo4j.
+---
 
-### Ejemplos `curl`
+## 🖥️ Frontend (assets/index.html)
+
+* **Stack**: Tailwind (CDN), Alpine.js, D3 v7.
+* **Búsqueda** con paginación básica; detalle de película (cast agrupado).
+* **Grafo**:
+
+  * Flechas por relación, colores por **tipo de relación** y **tipo de nodo**.
+  * **Etiquetas de relación** opcionales.
+  * **Leyendas** de tipos y contadores por relación.
+  * **Profundidad desde selección**: BFS filtrado por relaciones activas.
+  * **Panel de selección** con **propiedades del nodo** (`props`) renderizadas como lista y JSON.
+  * **Ajustar vista** automático y botón de *refit*.
+* **Enlaces útiles** en cabecera: **Métricas** y **Docs** (Swagger UI).
+
+---
+
+## 🧩 Arquitectura (alto nivel)
+
+```
+Axum Router
+├─ GET  /, /index.html  (ServeDir ./assets)
+├─ GET  /health
+├─ GET  /metrics        (Prometheus)
+├─ GET  /search
+├─ GET  /movie/:title
+├─ POST /movie/vote/:title
+├─ GET  /graph
+└─ /docs + /api-docs/openapi.json (Swagger UI + OpenAPI via utoipa)
+
+Service
+└─ Graph (neo4rs)
+   ├─ Cypher búsqueda/lectura
+   └─ Construcción de subgrafo + props()
+```
+
+---
+
+## 📝 Swagger/OpenAPI
+
+* Declarado con `#[derive(OpenApi)]` y `#[utoipa::path]` en handlers.
+* **UI** montada con `utoipa-swagger-ui` para Axum:
+
+  * UI: `/docs`
+  * JSON: `/api-docs/openapi.json`
+
+**Dependencias relevantes en `Cargo.toml`:**
+
+```toml
+utoipa = "4"
+utoipa-swagger-ui = { version = "7", features = ["axum"] }
+```
+
+> Si ves un error sobre `utoipa` y `feature = "macros"`, elimínala (ya no existe en v4).
+
+---
+
+## 🔒 TLS (Rustls provider)
+
+Se instala el **ring provider** al inicio de `main`:
+
+```rust
+rustls::crypto::ring::default_provider()
+    .install_default()
+    .expect("failed to install rustls ring provider");
+```
+
+Esto evita el pánico: *“Could not automatically determine the process-level CryptoProvider…”*
+Asegúrate de tener en `Cargo.toml`:
+
+```toml
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+```
+
+---
+
+## 🧪 Pruebas rápidas (curl)
 
 ```bash
-# Health
-curl -s http://localhost:8080/health
+curl 'http://localhost:8080/health'
 
-# Búsqueda
-curl -s "http://localhost:8080/search?q=matrix&offset=0&limit=10" | jq .
+curl 'http://localhost:8080/search?q=matrix&limit=5'
 
-# Detalle
-curl -s "http://localhost:8080/movie/The%20Matrix" | jq .
+curl 'http://localhost:8080/movie/The%20Matrix'
 
-# Voto
-curl -X POST -s "http://localhost:8080/movie/The%20Matrix/vote" | jq .
+curl -X POST 'http://localhost:8080/movie/vote/The%20Matrix'
 
-# Grafo (subgrafo desde persona, 2 saltos)
-curl -s "http://localhost:8080/graph?root=Tom%20Hanks&depth=2&rel=ACTED_IN,DIRECTED&node_incl=Movie,Person&released_gte=1990" | jq .
-```
-
----
-
-## 🖥️ UI (assets/index.html)
-
-* **Búsqueda** de películas (lista lateral).
-* **Detalle** de película (título, año, tagline, reparto, botón de votos).
-* **Grafo** interactivo:
-
-  * Colores por tipo de nodo y relación, flechas y etiquetas.
-  * Filtros por relación, **profundidad desde selección**, contador de nodos/enlaces.
-  * **Panel de selección con propiedades completas del nodo (`props`)**.
-  * Atajos:
-
-    * `G` refrescar grafo
-    * `/` enfocar búsqueda
-    * `Enter` ejecutar búsqueda
-    * *Doble clic* en película abre el detalle
-* **Métricas** en `/metrics` y **estado** del servidor en el header.
-
----
-
-## 🧱 Middlewares & Hardening
-
-* **CORS** (GET/POST), **Compression**, **Timeout**, **Request Body Limit**
-* **Concurrency limit** global (Tower)
-* **Trace** de requests con `tracing`
-* **Request ID** y **Sensitive Headers**
-* **Headers** de seguridad básicos:
-
-  * `x-content-type-options: nosniff`
-  * `x-frame-options: DENY`
-  * `referrer-policy: no-referrer`
-
----
-
-## 🧩 Estructura
-
-```
-.
-├─ assets/
-│  └─ index.html           # UI (Tailwind + Alpine + D3)
-├─ src/
-│  └─ main.rs              # Axum + Neo4j + métricas
-├─ Cargo.toml
-└─ README.md
+curl 'http://localhost:8080/graph?limit=200&rel=ACTED_IN,DIRECTED'
 ```
 
 ---
 
 ## 🐛 Troubleshooting
 
-* **Pánico de Rustls “CryptoProvider”**
-  El código ya instala el provider `ring` al inicio del `main()`. Si cambias a `aws-lc-rs`, recuerda actualizar:
+* **Pánico Rustls CryptoProvider**
+  Ver sección TLS; asegura `features = ["ring"]` y la llamada `install_default()`.
 
-  ```rust
-  rustls::crypto::aws_lc_rs::default_provider().install_default()?;
-  ```
+* **No hay datos**
+  Revisa credenciales/URI de Neo4j (`NEO4J_*`) o usa los valores por defecto del *demo*.
 
-* **Conexión Neo4j falla**
-  Verifica `NEO4J_URI/USER/PASSWORD/DATABASE`. Si es local sin TLS: `bolt://localhost:7687`.
-
-* **No se ve el grafo**
-  Mira `/health`. Si está ok, abre DevTools → Network para comprobar `/graph`.
-  Verifica que hay datos en la DB o ajusta filtros (rel, node\_incl, depth…).
+* **CORS**
+  Está en `Any` para desarrollo. Ajusta `CorsLayer` si necesitas restringir orígenes.
 
 ---
 
-## 🤝 Contribuir
+## 📂 Estructura
 
-Issues y PRs son bienvenidos. Estilo Rust estándar (`rustfmt`).
-Intenta mantener el frontend sin build steps (CDN) para facilitar la ejecución.
+```
+assets/
+  index.html           # UI (Tailwind + Alpine + D3)
+src/
+  main.rs              # Axum + Neo4j + Swagger + métricas
+Cargo.toml
+```
 
 ---
 
 ## 📜 Licencia
 
-MIT © 2025 — Tú decides. Puedes cambiarla si prefieres otra.
+MIT. Si reutilizas partes, ¡agradece con una estrella ⭐!
 
 ---
 
-## ✨ Créditos
+## 🤝 Contribuir
 
-* Dataset de ejemplo **movies** por Neo4j Labs.
-* Este proyecto es educativo: muestra Axum + Neo4j + D3 con métricas y un frontend mínimo.
+PRs y issues son bienvenidos:
+
+* Mantén el estilo y comentarios claros.
+* Añade pruebas manuales (cURL) a la descripción.
+* Si tocas el frontend, prueba atajos y panel de propiedades.
+
+---
+
+¡Listo! Abre **[http://localhost:8080/](http://localhost:8080/)**, explora el grafo y juega con los filtros.
+Docs interactivas en **[http://localhost:8080/docs](http://localhost:8080/docs)**.

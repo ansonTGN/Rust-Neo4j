@@ -31,6 +31,10 @@ use tracing_error::ErrorLayer;
 use tracing_subscriber::{layer::SubscriberExt as _, util::SubscriberInitExt as _, EnvFilter};
 use uuid::Uuid;
 
+// --- OpenAPI / Swagger ---
+use utoipa::{OpenApi, ToSchema, IntoParams};
+use utoipa_swagger_ui::SwaggerUi;
+
 // ============================
 // Config
 // ============================
@@ -109,6 +113,7 @@ async fn main() -> Result<()> {
 
     use axum::http::header::{AUTHORIZATION, COOKIE, SET_COOKIE};
 
+    // --- Router + Swagger UI ---
     let app = Router::new()
         .route("/", get(|| async { Redirect::temporary("/index.html") }))
         .route("/health", get(health))
@@ -120,6 +125,8 @@ async fn main() -> Result<()> {
         .route("/movie/vote/:title", post(vote))
         .route("/search", get(search))
         .route("/graph", get(graph))
+        // Swagger UI en /docs y JSON en /api-docs/openapi.json
+        .merge(SwaggerUi::new("/docs").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .fallback_service(ServeDir::new(assets_dir))
         .with_state(service)
         // middlewares
@@ -171,6 +178,35 @@ async fn main() -> Result<()> {
 }
 
 // ============================
+// OpenAPI Doc
+// ============================
+
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Movies API",
+        version = "1.0.0",
+        description = "Demo Axum + Neo4j con grafo y métricas"
+    ),
+    paths(
+        health,
+        movie,
+        vote,
+        search,
+        graph
+    ),
+    components(
+        schemas(
+            Movie, MovieResult, Person, VoteResult, BrowseResponse, Node, Link, Search, Browse
+        )
+    ),
+    tags(
+        (name = "movies", description = "Operaciones sobre películas")
+    )
+)]
+struct ApiDoc;
+
+// ============================
 // Infra
 // ============================
 
@@ -215,6 +251,14 @@ async fn warmup(db: &Graph) -> Result<()> {
 // Handlers
 // ============================
 
+#[utoipa::path(
+    get,
+    path = "/health",
+    tag = "movies",
+    responses(
+        (status = 200, description = "Service healthy", body = String)
+    )
+)]
 async fn health(State(service): State<Service>) -> Result<impl IntoResponse, AppError> {
     const PING: &str = "RETURN 1 AS ok";
     let mut rows = service.db.execute(neo4rs::query(PING)).await?;
@@ -226,6 +270,18 @@ async fn health(State(service): State<Service>) -> Result<impl IntoResponse, App
     }
 }
 
+#[utoipa::path(
+    get,
+    path = "/movie/{title}",
+    tag = "movies",
+    params(
+        ("title" = String, Path, description = "Movie title (exact match)")
+    ),
+    responses(
+        (status = 200, description = "Movie detail", body = Movie),
+        (status = 404, description = "Movie not found")
+    )
+)]
 async fn movie(
     Path(title): Path<String>,
     State(service): State<Service>,
@@ -238,6 +294,18 @@ async fn movie(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/movie/vote/{title}",
+    tag = "movies",
+    params(
+        ("title" = String, Path, description = "Movie title (exact match)")
+    ),
+    responses(
+        (status = 200, description = "Vote counter increased", body = VoteResult),
+        (status = 404, description = "Movie not found")
+    )
+)]
 async fn vote(
     Path(title): Path<String>,
     State(service): State<Service>,
@@ -246,6 +314,15 @@ async fn vote(
     Ok(Json(service.vote(title).await?))
 }
 
+#[utoipa::path(
+    get,
+    path = "/search",
+    tag = "movies",
+    params(Search),
+    responses(
+        (status = 200, description = "Search results", body = [MovieResult])
+    )
+)]
 async fn search(
     Query(search): Query<Search>,
     State(service): State<Service>,
@@ -253,6 +330,15 @@ async fn search(
     Ok(Json(service.search(search).await?))
 }
 
+#[utoipa::path(
+    get,
+    path = "/graph",
+    tag = "movies",
+    params(Browse),
+    responses(
+        (status = 200, description = "Graph sub-sample", body = BrowseResponse)
+    )
+)]
 async fn graph(
     Query(browse): Query<Browse>,
     State(service): State<Service>,
@@ -415,53 +501,40 @@ impl Service {
         let released_gte: Option<i64> = browse.released_gte;
         let released_lte: Option<i64> = browse.released_lte;
 
-        // Construcción de Cypher (dos variantes) con properties(s)/properties(t)
+        // Construcción de Cypher (dos variantes) + properties()
         let cypher = if use_root.is_some() && depth >= 1 {
-            // Subgrafo alrededor de root hasta N saltos
             r#"
                 MATCH (root)
                 WHERE (root:Movie AND root.title = $root)
                    OR (root:Person AND root.name  = $root)
-                   OR (root:node {title:$root})    // fallback si otra etiqueta usa 'title'
+                   OR (root:node {title:$root})
                 MATCH p = (root)-[r*1..$depth]-(n)
                 UNWIND relationships(p) AS relx
                 WITH DISTINCT startNode(relx) AS s, endNode(relx) AS t, type(relx) AS rel
                 WHERE (size($rels) = 0 OR rel IN $rels)
-
-                  // INCLUIR etiquetas (si hay)
                   AND (size($node_incl) = 0 OR any(lbl IN labels(s) WHERE lbl IN $node_incl))
                   AND (size($node_incl) = 0 OR any(lbl IN labels(t) WHERE lbl IN $node_incl))
-
-                  // EXCLUIR etiquetas (si hay)
                   AND (size($node_excl) = 0 OR all(lbl IN labels(s) WHERE NOT lbl IN $node_excl))
                   AND (size($node_excl) = 0 OR all(lbl IN labels(t) WHERE NOT lbl IN $node_excl))
-
-                  // Años (solo afectan a Movie)
                   AND ($released_gte IS NULL OR CASE WHEN s:Movie THEN coalesce(s.released,-1) >= $released_gte ELSE true END)
                   AND ($released_gte IS NULL OR CASE WHEN t:Movie THEN coalesce(t.released,-1) >= $released_gte ELSE true END)
                   AND ($released_lte IS NULL OR CASE WHEN s:Movie THEN coalesce(s.released,999999) <= $released_lte ELSE true END)
                   AND ($released_lte IS NULL OR CASE WHEN t:Movie THEN coalesce(t.released,999999) <= $released_lte ELSE true END)
-
                 RETURN s, t, rel, properties(s) AS sProps, properties(t) AS tProps
                 LIMIT $limit
             "#
         } else {
-            // Muestreo general con filtros
             r#"
                 MATCH (s)-[r]->(t)
                 WHERE (size($rels) = 0 OR type(r) IN $rels)
-
                   AND (size($node_incl) = 0 OR any(lbl IN labels(s) WHERE lbl IN $node_incl))
                   AND (size($node_incl) = 0 OR any(lbl IN labels(t) WHERE lbl IN $node_incl))
-
                   AND (size($node_excl) = 0 OR all(lbl IN labels(s) WHERE NOT lbl IN $node_excl))
                   AND (size($node_excl) = 0 OR all(lbl IN labels(t) WHERE NOT lbl IN $node_excl))
-
                   AND ($released_gte IS NULL OR CASE WHEN s:Movie THEN coalesce(s.released,-1) >= $released_gte ELSE true END)
                   AND ($released_gte IS NULL OR CASE WHEN t:Movie THEN coalesce(t.released,-1) >= $released_gte ELSE true END)
                   AND ($released_lte IS NULL OR CASE WHEN s:Movie THEN coalesce(s.released,999999) <= $released_lte ELSE true END)
                   AND ($released_lte IS NULL OR CASE WHEN t:Movie THEN coalesce(t.released,999999) <= $released_lte ELSE true END)
-
                 RETURN s, t, type(r) AS rel, properties(s) AS sProps, properties(t) AS tProps
                 LIMIT $limit
             "#
@@ -496,13 +569,13 @@ impl Service {
 
             let s_idx = *index.entry(s_key).or_insert_with(|| {
                 let idx = nodes.len();
-                nodes.push(Node { title: s_title, label: s_label, props: s_props.clone() });
+                nodes.push(Node { title: s_title, label: s_label.to_string(), props: s_props.clone() });
                 idx
             });
 
             let t_idx = *index.entry(t_key).or_insert_with(|| {
                 let idx = nodes.len();
-                nodes.push(Node { title: t_title, label: t_label, props: t_props.clone() });
+                nodes.push(Node { title: t_title, label: t_label.to_string(), props: t_props.clone() });
                 idx
             });
 
@@ -532,10 +605,59 @@ fn extract_key_label_title(n: &NeoNode) -> Result<(String, &'static str, String)
 }
 
 // ============================
-// Tipos API
+// Tipos API (Schemas)
 // ============================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+struct Movie {
+    released: Option<u32>,
+    title: Option<String>,
+    tagline: Option<String>,
+    votes: Option<usize>,
+    cast: Option<Vec<Person>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+struct MovieResult {
+    movie: Movie,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+struct Person {
+    job: String,
+    role: Option<Vec<String>>,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+struct VoteResult {
+    votes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct BrowseResponse {
+    nodes: Vec<Node>,
+    links: Vec<Link>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct Node {
+    title: String,
+    label: String,
+    /// Todas las propiedades del nodo (mapa JSON)
+    #[schema(value_type = Object)]
+    props: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct Link {
+    source: usize,
+    target: usize,
+    rel: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct Search {
     q: String,
     #[serde(default)]
@@ -544,7 +666,8 @@ struct Search {
     limit: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct Browse {
     limit: Option<i32>,
 
@@ -575,53 +698,6 @@ struct Browse {
     /// Año máximo de Movie (inclusive)
     #[serde(default)]
     released_lte: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct Movie {
-    released: Option<u32>,
-    title: Option<String>,
-    tagline: Option<String>,
-    votes: Option<usize>,
-    cast: Option<Vec<Person>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct MovieResult {
-    movie: Movie,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Person {
-    job: String,
-    role: Option<Vec<String>>,
-    name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct VoteResult {
-    votes: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct BrowseResponse {
-    nodes: Vec<Node>,
-    links: Vec<Link>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct Node {
-    title: String,
-    label: &'static str,
-    /// Todas las propiedades del nodo (mapa JSON)
-    props: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct Link {
-    source: usize,
-    target: usize,
-    rel: String,
 }
 
 // ============================

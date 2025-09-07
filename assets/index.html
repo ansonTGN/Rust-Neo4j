@@ -36,6 +36,7 @@
     .toggle:checked { background:#5aa9ff; }
     .toggle:before { content:''; width:14px; height:14px; background:#fff; border-radius:9999px; position:absolute; top:3px; left:3px; transition:all .18s; }
     .toggle:checked:before { transform:translateX(14px); }
+    code.kbd { padding:.1rem .35rem; border:1px solid #223045; background:#111720; border-radius:.4rem; font-size:.9em}
   </style>
 </head>
 <body class="min-h-full bg-bg text-text-base">
@@ -125,18 +126,18 @@
 
       // colores y filtros
       nodeTypeColors:new Map(), relTypeColors:new Map(),
-      relEnabled:new Map(), // rel -> boolean
-      relCounts:new Map(),  // rel -> total links
+      relEnabled:new Map(),
+      relCounts:new Map(),
       depth:2,
       depthFromSelection:true,
 
       // selección
-      selected:null, selectedInfo:null,
+      selected:null, selectedInfo:null, selectedProps:[],
 
       // salud
       health:'checking',
 
-      // helper para formatear valores de propiedades
+      // helper formateo
       fmt(v){
         if (v === null || v === undefined) return String(v);
         if (Array.isArray(v)) return v.join(', ');
@@ -181,7 +182,7 @@
 
       // ---- selección grafo ----
       clearSelection(){
-        this.selected=null; this.selectedInfo=null;
+        this.selected=null; this.selectedInfo=null; this.selectedProps=[];
         if(window.__graphRefs){
           const { nodeSel, linkSel, edgeLabelSel } = window.__graphRefs;
           nodeSel.attr('stroke', null).attr('stroke-width', null).attr('opacity', 1);
@@ -215,6 +216,13 @@
         this.selected = d;
         this.selectedInfo = { title:d.title, label:d.label, degree:uniq.length, compSize, neighborsGrouped };
 
+        // props → array ordenado
+        try{
+          const obj = d.props || {};
+          const entries = Object.entries(obj).sort((a,b)=>a[0].localeCompare(b[0]));
+          this.selectedProps = entries.slice(0, 80); // límite visual
+        }catch{ this.selectedProps=[]; }
+
         if (window.__graphRefs) {
           const { nodeSel, linkSel, edgeLabelSel } = window.__graphRefs;
           nodeSel
@@ -242,24 +250,19 @@
           const raw=await r.json();
           this.gData = raw;
 
-          // tipos dinámicos
           const nodeTypes = Array.from(new Set((raw.nodes||[]).map(n => n.label || 'node')));
           const relTypes  = Array.from(new Set((raw.links||[]).map(l => l.rel || 'ACTED_IN')));
 
-          // colores
           this.nodeTypeColors = makeColorScale(nodeTypes, NODE_PALETTE);
           this.relTypeColors  = makeColorScale(relTypes,  REL_PALETTE);
 
-          // estado de filtros de relaciones (por defecto todas ON)
           this.relEnabled = new Map(relTypes.map(k => [k, true]));
-          // contadores por relación
           this.relCounts = new Map();
           for (const l of raw.links) {
             const k = l.rel || 'ACTED_IN';
             this.relCounts.set(k, (this.relCounts.get(k)||0)+1);
           }
 
-          // aplicar filtros iniciales y renderizar
           this.applyGraphFilters(true);
           this.observeGraphResize();
         }catch(e){ this.gError=String(e); this.gData={nodes:[],links:[]}; }
@@ -271,12 +274,10 @@
         if(!this.gData?.nodes?.length){ this.view={nodes:[],links:[]}; renderGraph([],[],this); return; }
 
         const allowed = new Set([...this.relEnabled.entries()].filter(([k,v])=>v).map(([k])=>k));
-        // filtra enlaces por relación
         let links = this.gData.links.filter(l => allowed.has(l.rel || 'ACTED_IN'));
 
         let nodes;
         if(this.depthFromSelection && this.selected){
-          // BFS desde seleccionado hasta profundidad N usando solo enlaces permitidos
           const adj = new Map();
           links.forEach(l=>{
             if(!adj.has(l.source)) adj.set(l.source,new Set());
@@ -309,7 +310,6 @@
 
       // leyendas y contadores
       updateLegendsAndCounters(){
-        // Nodos
         const nodeLegend = document.getElementById('legend-nodes');
         if(nodeLegend){
           nodeLegend.innerHTML = '';
@@ -320,7 +320,6 @@
             nodeLegend.appendChild(d);
           }
         }
-        // Relaciones (checkboxes)
         const relLegend = document.getElementById('legend-rels');
         if(relLegend){
           relLegend.innerHTML = '';
@@ -344,7 +343,6 @@
             });
             relLegend.appendChild(w);
           }
-          // Botones "Todas / Ninguna"
           const btns = document.createElement('div');
           btns.className='inline-flex gap-2 text-xs';
           const all=document.createElement('button');
@@ -358,7 +356,6 @@
           btns.appendChild(all); btns.appendChild(none);
           relLegend.appendChild(btns);
         }
-        // Contadores visibles
         const c = document.getElementById('graph-counts');
         if(c){ c.textContent = `${this.view.nodes.length} nodos · ${this.view.links.length} relaciones`; }
       },
@@ -377,7 +374,7 @@
     });
   });
 
-  // ---- D3 render con flechas, etiquetas, colores y re-ajuste ----
+  // ---- D3 render ----
   function renderGraph(nodes, links, store){
     const container = d3.select('#graph');
     container.selectAll('*').remove();
@@ -389,11 +386,9 @@
     const isDark = document.documentElement.classList.contains('dark');
     const baseColors = { stroke: isDark ? '#1e2a3a' : '#cfd8e3', text: isDark ? '#dce8f7' : '#0e1726' };
 
-    // SVG 100%
     const svg = container.append('svg').attr('width', width).attr('height', height).attr('style','display:block');
-
     const defs = svg.append('defs');
-    // Marcadores por tipo de relación
+
     const relTypes = Array.from(store.relTypeColors.keys());
     relTypes.forEach(rel => {
       defs.append('marker')
@@ -404,7 +399,6 @@
     });
 
     const g = svg.append('g');
-
     const zoom = d3.zoom().scaleExtent([0.5, 4]).on('zoom', (ev)=> g.attr('transform', ev.transform));
     svg.call(zoom).on('dblclick.zoom', null);
 
@@ -428,14 +422,12 @@
       .force('center', d3.forceCenter(width/2, height/2))
       .alphaDecay(0.05);
 
-    // Enlaces
     const linkSel = g.append('g').attr('stroke-opacity', .7)
       .selectAll('line').data(links).enter().append('line')
         .attr('stroke-width', 1.3)
         .attr('stroke', l => store.relTypeColors.get(l.rel || 'ACTED_IN'))
         .attr('marker-end', l => `url(#arrow-${slug(l.rel || 'ACTED_IN')})`);
 
-    // Etiquetas de enlace
     const edgeLabelSel = g.append('g').selectAll('text').data(links).enter().append('text')
       .attr('class', 'edge-label ' + (isDark ? '' : 'light'))
       .attr('text-anchor', 'middle')
@@ -443,7 +435,6 @@
       .attr('opacity', store.showEdgeLabels ? 1 : 0)
       .text(l => (l.rel || 'ACTED_IN'));
 
-    // Nodos
     const nodeSel = g.append('g').selectAll('circle').data(nodes).enter().append('circle')
       .attr('r', d => d.label === 'movie' ? 8 : 6)
       .attr('fill', d => store.nodeTypeColors.get(d.label || 'node') || '#93c5fd')
@@ -458,7 +449,6 @@
       .on('mouseover', function(){ if(!store.selected) d3.select(this).attr('stroke-width',1.4); })
       .on('mouseout',  function(){ if(!store.selected) d3.select(this).attr('stroke-width',0.6); });
 
-    // Etiquetas de nodo
     const labels = g.append('g').selectAll('text.node-label').data(nodes).enter().append('text')
       .attr('class', 'node-label')
       .text(d => d.title)
@@ -485,14 +475,12 @@
     });
 
     function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
-
     svg.on('click', () => store.clearSelection());
 
     window.__graphRefs.nodeSel = nodeSel;
     window.__graphRefs.linkSel = linkSel;
     window.__graphRefs.edgeLabelSel = edgeLabelSel;
 
-    // Ajuste inicial
     window.__graphRefs.zoomFit();
     setTimeout(()=> window.__graphRefs.zoomFit(), 300);
   }
@@ -554,6 +542,8 @@
       </div>
       <span class="opacity-50">•</span>
       <a href="/metrics" target="_blank" rel="noopener" class="px-3 py-2 rounded-lg border border-bg-border hover:bg-bg-elev transition">Métricas</a>
+      <!-- Enlace a Swagger UI -->
+      <a href="/docs" target="_blank" rel="noopener" class="px-3 py-2 rounded-lg border border-bg-border hover:bg-bg-elev transition">Docs</a>
       <button @click="$store.ui.toggleTheme()" class="px-3 py-2 rounded-lg border border-bg-border hover:bg-bg-elev transition">🌓</button>
     </div>
   </header>
@@ -755,9 +745,9 @@
                class="flex-1 min-h-[360px] rounded-2xl border-t border-bg-border overflow-hidden relative z-0"
                style="isolation:isolate"></div>
 
-          <!-- Panel de selección -->
+          <!-- Panel de selección con propiedades -->
           <div x-show="$store.api.selectedInfo" x-transition
-               class="absolute top-2 right-2 max-w-[360px] w-[92%] sm:w-[360px] bg-bg-card border border-bg-border rounded-xl shadow-soft p-3 z-10 pointer-events-auto"
+               class="absolute top-2 right-2 max-w-[380px] w-[92%] sm:w-[380px] bg-bg-card border border-bg-border rounded-xl shadow-soft p-3 z-10 pointer-events-auto"
                @click.stop>
             <div class="flex items-start justify-between gap-2">
               <div class="min-w-0">
@@ -772,31 +762,41 @@
               </div>
               <button class="text-text-muted hover:text-text-base" @click="$store.api.clearSelection()" title="Cerrar">✕</button>
             </div>
-            <div class="mt-2 text-sm">
-              <div class="flex flex-wrap gap-2">
-                <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Grado: <strong x-text="$store.api.selectedInfo?.degree"></strong></span>
-                <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Componente: <strong x-text="$store.api.selectedInfo?.compSize"></strong> nodos</span>
-              </div>
+
+            <div class="mt-2 text-sm flex flex-wrap gap-2">
+              <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Grado: <strong x-text="$store.api.selectedInfo?.degree"></strong></span>
+              <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Componente: <strong x-text="$store.api.selectedInfo?.compSize"></strong> nodos</span>
             </div>
 
-            <!-- NUEVO: Propiedades del nodo seleccionado -->
+            <!-- Propiedades -->
             <div class="mt-3">
-              <div class="font-semibold mb-1">Propiedades</div>
-              <div class="max-h-40 overflow-auto pr-1 text-xs border border-bg-border rounded-lg">
-                <div class="p-2">
-                  <template x-if="!$store.api.selected?.props || Object.keys($store.api.selected?.props||{}).length===0">
-                    <div class="text-text-muted">Sin propiedades.</div>
-                  </template>
-                  <template x-for="[k,v] in Object.entries($store.api.selected?.props || {})" :key="k">
-                    <div class="flex justify-between gap-2 py-1 border-b border-bg-border/40 last:border-b-0">
-                      <span class="text-text-muted truncate" x-text="k"></span>
-                      <span class="truncate" :title="typeof v==='object'? JSON.stringify(v): String(v)" x-text="$store.api.fmt(v)"></span>
-                    </div>
-                  </template>
+              <div class="flex items-center justify-between">
+                <div class="font-semibold text-sm">Propiedades</div>
+                <div class="flex items-center gap-2">
+                  <button class="text-xs px-2 py-1 rounded-lg border border-bg-border hover:bg-bg-elev transition"
+                          @click="navigator.clipboard.writeText(JSON.stringify($store.api.selected?.props||{}, null, 2))">Copiar JSON</button>
                 </div>
               </div>
+              <div class="max-h-40 overflow-auto mt-2 pr-1">
+                <template x-if="!$store.api.selectedProps.length">
+                  <div class="text-xs text-text-muted">— sin propiedades —</div>
+                </template>
+                <template x-for="[k,v] in $store.api.selectedProps" :key="k">
+                  <div class="text-xs flex items-start gap-2 py-0.5">
+                    <span class="text-text-muted shrink-0 w-28 truncate" :title="k" x-text="k"></span>
+                    <span class="opacity-50">:</span>
+                    <span class="break-all" x-text="$store.api.fmt(v)"></span>
+                  </div>
+                </template>
+              </div>
+              <details class="mt-2">
+                <summary class="text-xs text-text-muted cursor-pointer">Ver JSON</summary>
+                <pre class="text-xs mt-1 p-2 bg-bg-elev border border-bg-border rounded-lg overflow-auto"
+                     x-text="JSON.stringify($store.api.selected?.props||{}, null, 2)"></pre>
+              </details>
             </div>
 
+            <!-- Vecinos por tipo -->
             <div class="mt-3 grid grid-cols-1 gap-2">
               <template x-for="(arr, label) in $store.api.selectedInfo?.neighborsGrouped" :key="label">
                 <div>
@@ -821,7 +821,7 @@
             </div>
           </div>
 
-          <p class="text-text-muted text-xs p-3">Clic para ver información y propiedades. Doble clic en una película abre el detalle. Rueda = zoom, arrastra el fondo = pan.</p>
+          <p class="text-text-muted text-xs p-3">Clic para ver información. Doble clic en una película abre el detalle. Rueda = zoom, arrastra el fondo = pan.</p>
         </div>
 
         <!-- RESIZER VERTICAL INTERNO -->
@@ -833,10 +833,10 @@
              class="bg-bg-card border border-bg-border rounded-2xl shadow-soft overflow-hidden p-4">
           <h3 class="font-semibold mb-2">Ayuda / Atajos</h3>
           <ul class="list-disc list-inside text-sm space-y-1">
-            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">G</kbd> refrescar grafo</li>
-            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">/</kbd> enfocar búsqueda</li>
-            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">Enter</kbd> iniciar búsqueda</li>
-            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">Doble clic</kbd> detalle de película</li>
+            <li><code class="kbd">G</code> refrescar grafo</li>
+            <li><code class="kbd">/</code> enfocar búsqueda</li>
+            <li><code class="kbd">Enter</code> iniciar búsqueda</li>
+            <li><code class="kbd">Doble clic</code> detalle de película</li>
           </ul>
           <h4 class="font-semibold mt-4 mb-2">Endpoints</h4>
           <div class="flex flex-wrap gap-2">
@@ -846,6 +846,7 @@
             <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/graph?limit=</code></span>
             <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/health</code></span>
             <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/metrics</code></span>
+            <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">UI <code>/docs</code></span>
           </div>
         </div>
 
