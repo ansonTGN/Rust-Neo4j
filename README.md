@@ -70,7 +70,7 @@ Salida esperada:
 listening on 0.0.0.0:8080
 ```
 
-Abre el navegador en: **[http://localhost:8080/](http://localhost:8080/)**
+Abre el navegador en: **[http://localhost:8080/index.html](http://127.0.0.1:8080/index.html)**
 
 > El provider de crypto **ring** para `rustls` se **instala al inicio** del `main()` (Opción A). Esto evita el pánico de “Could not automatically determine the process-level CryptoProvider”.
 
