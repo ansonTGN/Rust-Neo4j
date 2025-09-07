@@ -1,0 +1,55 @@
+[package]
+name = "movies-rust-bolt"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+# Activa el bloque opcional en main.rs con:
+#   cargo run --release --features rustls-ring-provider
+rustls-ring-provider = []
+
+[dependencies]
+# --- Web / API ---
+axum = { version = "0.7", features = ["macros"] }
+tower = { version = "0.4", features = ["limit"] }
+tower-http = { version = "0.6", features = [
+  "trace",
+  "cors",
+  "timeout",
+  "limit",
+  "set-header",
+  "request-id",
+  "compression-full",
+  "fs",
+  "sensitive-headers"
+] }
+
+# --- TLS (proveedor opcional en main.rs) ---
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+
+# --- Observabilidad ---
+axum-prometheus = "0.6"
+metrics-exporter-prometheus = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-error = "0.2"
+
+# --- DB Neo4j ---
+neo4rs = "0.9.0-rc.8"
+
+# --- Utilidades ---
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+color-eyre = "0.6"
+
+
+
+
+
+
+
+

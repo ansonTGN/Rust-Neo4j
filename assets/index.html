@@ -1,0 +1,882 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full" x-data x-init="$watch('$store.ui.theme', v => document.documentElement.classList.toggle('dark', v==='dark'))" :class="{'dark': $store.ui.theme==='dark'}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Movies • Neo4j Demo</title>
+  <meta name="color-scheme" content="dark light" />
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode:'class',
+      theme:{ extend:{
+        colors:{
+          bg:{ DEFAULT:'#0b0f14', elev:'#111720', card:'#131a24', border:'#223045' },
+          text:{ base:'#e7eef7', muted:'#9fb0c3' },
+          brand:{ DEFAULT:'#5aa9ff' },
+          ok:'#38d39f', warn:'#ffb454', err:'#ff6363',
+          chip:{ bg:'#20314a', text:'#cfe4ff' }
+        },
+        boxShadow:{ soft:'0 8px 30px rgba(0,0,0,.35)' }
+      }}
+    };
+  </script>
+
+  <!-- Alpine -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <!-- D3 -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+
+  <style>
+    *{scrollbar-width:thin;scrollbar-color:#4b5563 transparent}
+    .edge-label { font-size:10px; paint-order:stroke; stroke:rgba(0,0,0,0.55); stroke-width:2.5px; }
+    .edge-label.light { stroke:rgba(255,255,255,0.65); }
+    .toggle { appearance:none; width:34px; height:20px; background:#334155; border-radius:9999px; position:relative; outline:none; cursor:pointer; }
+    .toggle:checked { background:#5aa9ff; }
+    .toggle:before { content:''; width:14px; height:14px; background:#fff; border-radius:9999px; position:absolute; top:3px; left:3px; transition:all .18s; }
+    .toggle:checked:before { transform:translateX(14px); }
+  </style>
+</head>
+<body class="min-h-full bg-bg text-text-base">
+
+<script>
+  // Utils
+  const debounce = (fn, ms=120) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a), ms); }; };
+  const slug = s => String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'-');
+  const NODE_PALETTE = ['#7dd3fc','#fca5a5','#a7f3d0','#fbcfe8','#fde68a','#c7d2fe','#fdba74','#f9a8d4','#86efac','#93c5fd'];
+  const REL_PALETTE  = ['#60a5fa','#f87171','#34d399','#f59e0b','#a78bfa','#f472b6','#22d3ee','#84cc16','#fb7185','#10b981'];
+  const makeColorScale = (keys, palette) => { const m=new Map(); keys.forEach((k,i)=>m.set(k, palette[i%palette.length])); return m; };
+
+  document.addEventListener('alpine:init', () => {
+    // ---- UI ----
+    Alpine.store('ui', {
+      theme: localStorage.getItem('theme') || 'dark',
+      toggleTheme(){ this.theme=this.theme==='dark'?'light':'dark'; localStorage.setItem('theme', this.theme); }
+    });
+
+    // ---- Layout ----
+    Alpine.store('layout', {
+      showSearch: JSON.parse(localStorage.getItem('showSearch') ?? 'true'),
+      showDetail: JSON.parse(localStorage.getItem('showDetail') ?? 'true'),
+      showGraph:  JSON.parse(localStorage.getItem('showGraph')  ?? 'true'),
+      showHelp:   JSON.parse(localStorage.getItem('showHelp')   ?? 'true'),
+      leftWidth:  parseInt(localStorage.getItem('leftWidth')  ?? '360', 10),
+      detailH:    parseInt(localStorage.getItem('detailH')    ?? '260', 10),
+      graphW:     parseInt(localStorage.getItem('graphW')     ?? '460', 10),
+
+      save(){
+        localStorage.setItem('showSearch', JSON.stringify(this.showSearch));
+        localStorage.setItem('showDetail', JSON.stringify(this.showDetail));
+        localStorage.setItem('showGraph',  JSON.stringify(this.showGraph));
+        localStorage.setItem('showHelp',   JSON.stringify(this.showHelp));
+        localStorage.setItem('leftWidth',  String(this.leftWidth));
+        localStorage.setItem('detailH',    String(this.detailH));
+        localStorage.setItem('graphW',     String(this.graphW));
+        setTimeout(()=> Alpine.store('api').refit(), 10);
+      },
+      startDragCol(e){
+        e.preventDefault();
+        const min = 220, max = Math.max(320, window.innerWidth - 340);
+        const startX=e.clientX, startW=this.leftWidth;
+        document.body.style.cursor='col-resize';
+        const move=(ev)=>{ let w=startW+(ev.clientX-startX); w=Math.max(min,Math.min(max,w)); this.leftWidth=w; this.save(); };
+        const up=()=>{ document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); document.body.style.cursor=''; };
+        document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+      },
+      startDragRow(e){
+        e.preventDefault();
+        const rect=document.getElementById('rightGrid').getBoundingClientRect();
+        const min=160,max=Math.max(200,rect.height-220);
+        const startY=e.clientY,startH=this.detailH;
+        document.body.style.cursor='row-resize';
+        const move=(ev)=>{ let h=startH+(ev.clientY-startY); h=Math.max(min,Math.min(max,h)); this.detailH=h; this.save(); };
+        const up=()=>{ document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); document.body.style.cursor=''; };
+        document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+      },
+      startDragInnerCol(e){
+        e.preventDefault();
+        const rect=document.getElementById('bottomGrid').getBoundingClientRect();
+        const min=280,max=Math.max(300,rect.width-280);
+        const startX=e.clientX,startW=this.graphW;
+        document.body.style.cursor='col-resize';
+        const move=(ev)=>{ let w=startW+(ev.clientX-startX); w=Math.max(min,Math.min(max,w)); this.graphW=w; this.save(); };
+        const up=()=>{ document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up); document.body.style.cursor=''; };
+        document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+      },
+      ensureDefaults(){
+        if(this.showSearch && this.leftWidth < 220) this.leftWidth = 360;
+        if(this.showDetail && this.detailH < 160) this.detailH = 260;
+        if(this.showGraph && this.graphW < 280) this.graphW = 460;
+        this.save();
+      }
+    });
+
+    // ---- API / Datos ----
+    Alpine.store('api', {
+      // búsqueda
+      q:'', page:0, limit:25, results:[], loading:false, error:'',
+      // detalle
+      detail:null, dLoading:false, dError:'',
+      // grafo (datos crudos + vista filtrada)
+      gLimit:200, gData:{nodes:[],links:[]}, view:{nodes:[],links:[]},
+      gLoading:false, gError:'',
+      linkDist:70, dimOthers:true, showEdgeLabels:true,
+
+      // colores y filtros
+      nodeTypeColors:new Map(), relTypeColors:new Map(),
+      relEnabled:new Map(), // rel -> boolean
+      relCounts:new Map(),  // rel -> total links
+      depth:2,
+      depthFromSelection:true,
+
+      // selección
+      selected:null, selectedInfo:null,
+
+      // salud
+      health:'checking',
+
+      // helper para formatear valores de propiedades
+      fmt(v){
+        if (v === null || v === undefined) return String(v);
+        if (Array.isArray(v)) return v.join(', ');
+        if (typeof v === 'object') return JSON.stringify(v);
+        return String(v);
+      },
+
+      async checkHealth(){ try{ const r=await fetch('/health'); this.health=r.ok?'ok':'warn'; }catch{ this.health='err'; } },
+
+      async search(reset=false){
+        if(reset) this.page=0;
+        if(!this.q.trim()){ this.results=[]; this.error=''; return; }
+        this.loading=true; this.error='';
+        const params = new URLSearchParams({ q:this.q.trim(), offset:String(this.page*this.limit), limit:String(this.limit) });
+        try{
+          const r=await fetch(`/search?${params}`); if(!r.ok) throw new Error(`HTTP ${r.status}`);
+          this.results=await r.json();
+        }catch(e){ this.error=String(e); this.results=[]; }
+        this.loading=false;
+      },
+
+      async showDetail(title){
+        this.dLoading=true; this.dError=''; this.detail=null;
+        try{
+          const r=await fetch(`/movie/${encodeURIComponent(title)}`);
+          if(r.status===404) this.dError=`No se encontró "${title}".`;
+          else if(!r.ok) throw new Error(`HTTP ${r.status}`);
+          else this.detail=await r.json();
+        }catch(e){ this.dError=String(e); }
+        this.dLoading=false;
+      },
+
+      async vote(){
+        if(!this.detail?.title) return;
+        try{
+          const r=await fetch(`/movie/vote/${encodeURIComponent(this.detail.title)}`, {method:'POST'});
+          if(!r.ok) throw new Error(`HTTP ${r.status}`);
+          await this.showDetail(this.detail.title);
+          alert('¡Voto registrado!');
+        }catch(e){ alert('No se pudo votar: '+e); }
+      },
+
+      // ---- selección grafo ----
+      clearSelection(){
+        this.selected=null; this.selectedInfo=null;
+        if(window.__graphRefs){
+          const { nodeSel, linkSel, edgeLabelSel } = window.__graphRefs;
+          nodeSel.attr('stroke', null).attr('stroke-width', null).attr('opacity', 1);
+          linkSel.attr('stroke-opacity', 0.7).attr('stroke-width', 1.2);
+          edgeLabelSel && edgeLabelSel.attr('opacity', this.showEdgeLabels ? 1 : 0);
+        }
+        if(this.depthFromSelection) this.applyGraphFilters();
+      },
+
+      computeComponentSizeFrom(d, links){
+        const adj = new Map();
+        links.forEach(l=>{
+          if(!adj.has(l.source)) adj.set(l.source,new Set());
+          if(!adj.has(l.target)) adj.set(l.target,new Set());
+          adj.get(l.source).add(l.target);
+          adj.get(l.target).add(l.source);
+        });
+        const seen=new Set([d]), q=[d];
+        while(q.length){ const cur=q.shift(); for(const nb of (adj.get(cur)||[])) if(!seen.has(nb)){ seen.add(nb); q.push(nb); } }
+        return seen.size;
+      },
+
+      selectNode(d, nodes, links){
+        const neighbors = links
+          .filter(l => l.source===d || l.target===d)
+          .map(l => l.source===d ? l.target : l.source);
+        const uniq = Array.from(new Set(neighbors));
+        const groupBy = (arr, key) => arr.reduce((acc,x)=>{ (acc[x[key]] ||= []).push(x); return acc; }, {});
+        const neighborsGrouped = groupBy(uniq.map(n=>({ title:n.title, label:n.label })), 'label');
+        const compSize = this.computeComponentSizeFrom(d, links);
+        this.selected = d;
+        this.selectedInfo = { title:d.title, label:d.label, degree:uniq.length, compSize, neighborsGrouped };
+
+        if (window.__graphRefs) {
+          const { nodeSel, linkSel, edgeLabelSel } = window.__graphRefs;
+          nodeSel
+            .attr('stroke', n => n===d ? '#fff' : null)
+            .attr('stroke-width', n => n===d ? 1.8 : null)
+            .attr('opacity', n => this.dimOthers ? ((n===d || uniq.includes(n)) ? 1 : 0.25) : 1);
+          linkSel
+            .attr('stroke-opacity', l => (l.source===d || l.target===d) ? 0.95 : (this.dimOthers ? 0.12 : 0.7))
+            .attr('stroke-width', l => (l.source===d || l.target===d) ? 2.2 : 1.2);
+          edgeLabelSel && edgeLabelSel
+            .attr('opacity', l => {
+              if(!this.showEdgeLabels) return 0;
+              return (l.source===d || l.target===d) ? 1 : (this.dimOthers ? 0.15 : 0.9);
+            });
+        }
+        if(this.depthFromSelection) this.applyGraphFilters();
+      },
+
+      // ---- carga grafo ----
+      async loadGraph(){
+        this.gLoading=true; this.gError=''; this.clearSelection();
+        try{
+          const r=await fetch(`/graph?limit=${this.gLimit}`);
+          if(!r.ok) throw new Error(`HTTP ${r.status}`);
+          const raw=await r.json();
+          this.gData = raw;
+
+          // tipos dinámicos
+          const nodeTypes = Array.from(new Set((raw.nodes||[]).map(n => n.label || 'node')));
+          const relTypes  = Array.from(new Set((raw.links||[]).map(l => l.rel || 'ACTED_IN')));
+
+          // colores
+          this.nodeTypeColors = makeColorScale(nodeTypes, NODE_PALETTE);
+          this.relTypeColors  = makeColorScale(relTypes,  REL_PALETTE);
+
+          // estado de filtros de relaciones (por defecto todas ON)
+          this.relEnabled = new Map(relTypes.map(k => [k, true]));
+          // contadores por relación
+          this.relCounts = new Map();
+          for (const l of raw.links) {
+            const k = l.rel || 'ACTED_IN';
+            this.relCounts.set(k, (this.relCounts.get(k)||0)+1);
+          }
+
+          // aplicar filtros iniciales y renderizar
+          this.applyGraphFilters(true);
+          this.observeGraphResize();
+        }catch(e){ this.gError=String(e); this.gData={nodes:[],links:[]}; }
+        this.gLoading=false;
+      },
+
+      // ---- filtrado (relaciones y profundidad) ----
+      applyGraphFilters(first=false){
+        if(!this.gData?.nodes?.length){ this.view={nodes:[],links:[]}; renderGraph([],[],this); return; }
+
+        const allowed = new Set([...this.relEnabled.entries()].filter(([k,v])=>v).map(([k])=>k));
+        // filtra enlaces por relación
+        let links = this.gData.links.filter(l => allowed.has(l.rel || 'ACTED_IN'));
+
+        let nodes;
+        if(this.depthFromSelection && this.selected){
+          // BFS desde seleccionado hasta profundidad N usando solo enlaces permitidos
+          const adj = new Map();
+          links.forEach(l=>{
+            if(!adj.has(l.source)) adj.set(l.source,new Set());
+            if(!adj.has(l.target)) adj.set(l.target,new Set());
+            adj.get(l.source).add(l.target);
+            adj.get(l.target).add(l.source);
+          });
+          const seen = new Set([this.selected]);
+          const depthMap = new Map([[this.selected,0]]);
+          const q = [this.selected];
+          while(q.length){
+            const cur=q.shift();
+            const d=depthMap.get(cur);
+            if(d>=this.depth) continue;
+            for(const nb of (adj.get(cur)||[])){
+              if(!seen.has(nb)){ seen.add(nb); depthMap.set(nb, d+1); q.push(nb); }
+            }
+          }
+          nodes = Array.from(seen);
+          links = links.filter(l => seen.has(l.source) && seen.has(l.target));
+        } else {
+          nodes = this.gData.nodes;
+        }
+
+        this.view = { nodes, links };
+        renderGraph(nodes, links, this);
+        this.updateLegendsAndCounters();
+        if(first) setTimeout(()=> this.refit(), 40);
+      },
+
+      // leyendas y contadores
+      updateLegendsAndCounters(){
+        // Nodos
+        const nodeLegend = document.getElementById('legend-nodes');
+        if(nodeLegend){
+          nodeLegend.innerHTML = '';
+          for(const [k,col] of this.nodeTypeColors.entries()){
+            const d=document.createElement('div');
+            d.className='inline-flex items-center gap-1.5 text-xs mr-3 mb-1';
+            d.innerHTML = `<span class="w-3 h-3 rounded-full inline-block" style="background:${col}"></span>${k}`;
+            nodeLegend.appendChild(d);
+          }
+        }
+        // Relaciones (checkboxes)
+        const relLegend = document.getElementById('legend-rels');
+        if(relLegend){
+          relLegend.innerHTML = '';
+          for(const [k,col] of this.relTypeColors.entries()){
+            const id = `rel-${slug(k)}`;
+            const w = document.createElement('label');
+            w.className = 'inline-flex items-center gap-2 text-xs mr-4 mb-2 select-none';
+            w.innerHTML = `
+              <input id="${id}" type="checkbox" ${this.relEnabled.get(k)?'checked':''}
+                     class="accent-brand">
+              <span class="inline-flex items-center gap-1">
+                <span class="inline-block w-5 h-[2px]" style="background:${col}"></span>
+                <svg width="8" height="8" class="inline-block -ml-1">
+                  <polygon points="0,0 8,4 0,8" style="fill:${col}"></polygon>
+                </svg>
+                ${k} <span class="opacity-60">(${this.relCounts.get(k)||0})</span>
+              </span>`;
+            w.querySelector('input').addEventListener('change', (ev)=>{
+              this.relEnabled.set(k, ev.target.checked);
+              this.applyGraphFilters();
+            });
+            relLegend.appendChild(w);
+          }
+          // Botones "Todas / Ninguna"
+          const btns = document.createElement('div');
+          btns.className='inline-flex gap-2 text-xs';
+          const all=document.createElement('button');
+          all.className='px-2.5 py-1 rounded-lg border border-bg-border hover:bg-bg-elev transition';
+          all.textContent='Todas';
+          all.onclick=()=>{ for(const k of this.relEnabled.keys()) this.relEnabled.set(k,true); this.applyGraphFilters(); };
+          const none=document.createElement('button');
+          none.className='px-2.5 py-1 rounded-lg border border-bg-border hover:bg-bg-elev transition';
+          none.textContent='Ninguna';
+          none.onclick=()=>{ for(const k of this.relEnabled.keys()) this.relEnabled.set(k,false); this.applyGraphFilters(); };
+          btns.appendChild(all); btns.appendChild(none);
+          relLegend.appendChild(btns);
+        }
+        // Contadores visibles
+        const c = document.getElementById('graph-counts');
+        if(c){ c.textContent = `${this.view.nodes.length} nodos · ${this.view.links.length} relaciones`; }
+      },
+
+      // zoom/ajuste y resize
+      refit(){ if(window.__graphRefs?.zoomFit) window.__graphRefs.zoomFit(); },
+      observeGraphResize(){
+        if(this._obs) return;
+        const el = document.getElementById('graph');
+        if(!el) return;
+        this._obs = new ResizeObserver(debounce(()=>{
+          if(this.view?.nodes?.length) renderGraph(this.view.nodes, this.view.links, this);
+        }, 120));
+        this._obs.observe(el);
+      }
+    });
+  });
+
+  // ---- D3 render con flechas, etiquetas, colores y re-ajuste ----
+  function renderGraph(nodes, links, store){
+    const container = d3.select('#graph');
+    container.selectAll('*').remove();
+
+    const el = container.node();
+    const width = el.clientWidth || 600;
+    const height = el.clientHeight || 460;
+
+    const isDark = document.documentElement.classList.contains('dark');
+    const baseColors = { stroke: isDark ? '#1e2a3a' : '#cfd8e3', text: isDark ? '#dce8f7' : '#0e1726' };
+
+    // SVG 100%
+    const svg = container.append('svg').attr('width', width).attr('height', height).attr('style','display:block');
+
+    const defs = svg.append('defs');
+    // Marcadores por tipo de relación
+    const relTypes = Array.from(store.relTypeColors.keys());
+    relTypes.forEach(rel => {
+      defs.append('marker')
+        .attr('id', `arrow-${slug(rel)}`)
+        .attr('viewBox', '0 -5 10 10').attr('refX', 12).attr('refY', 0)
+        .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
+        .append('path').attr('d', 'M0,-5L10,0L0,5').attr('fill', store.relTypeColors.get(rel)).attr('opacity', 0.95);
+    });
+
+    const g = svg.append('g');
+
+    const zoom = d3.zoom().scaleExtent([0.5, 4]).on('zoom', (ev)=> g.attr('transform', ev.transform));
+    svg.call(zoom).on('dblclick.zoom', null);
+
+    window.__graphRefs = window.__graphRefs || {};
+    window.__graphRefs.zoom = zoom;
+    window.__graphRefs.zoomFit = () => {
+      const bbox = g.node().getBBox();
+      if(!bbox.width || !bbox.height){ svg.transition().call(zoom.transform, d3.zoomIdentity); return; }
+      const pad = 40;
+      const scale = Math.min(4, Math.min((width - pad)/bbox.width, (height - pad)/bbox.height));
+      const tx = (width/2) - scale*(bbox.x + bbox.width/2);
+      const ty = (height/2) - scale*(bbox.y + bbox.height/2);
+      const t = d3.zoomIdentity.translate(tx, ty).scale(scale);
+      svg.transition().duration(350).call(zoom.transform, t);
+    };
+
+    const sim = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).distance(store.linkDist).strength(0.6))
+      .force('charge', d3.forceManyBody().strength(-140))
+      .force('collide', d3.forceCollide().radius(d=> (d.label==='movie'?12:10)).strength(0.8))
+      .force('center', d3.forceCenter(width/2, height/2))
+      .alphaDecay(0.05);
+
+    // Enlaces
+    const linkSel = g.append('g').attr('stroke-opacity', .7)
+      .selectAll('line').data(links).enter().append('line')
+        .attr('stroke-width', 1.3)
+        .attr('stroke', l => store.relTypeColors.get(l.rel || 'ACTED_IN'))
+        .attr('marker-end', l => `url(#arrow-${slug(l.rel || 'ACTED_IN')})`);
+
+    // Etiquetas de enlace
+    const edgeLabelSel = g.append('g').selectAll('text').data(links).enter().append('text')
+      .attr('class', 'edge-label ' + (isDark ? '' : 'light'))
+      .attr('text-anchor', 'middle')
+      .attr('fill', l => store.relTypeColors.get(l.rel || 'ACTED_IN'))
+      .attr('opacity', store.showEdgeLabels ? 1 : 0)
+      .text(l => (l.rel || 'ACTED_IN'));
+
+    // Nodos
+    const nodeSel = g.append('g').selectAll('circle').data(nodes).enter().append('circle')
+      .attr('r', d => d.label === 'movie' ? 8 : 6)
+      .attr('fill', d => store.nodeTypeColors.get(d.label || 'node') || '#93c5fd')
+      .attr('stroke', baseColors.stroke).attr('stroke-width', 0.6)
+      .style('filter', 'drop-shadow(0 0 6px rgba(0,0,0,.25))')
+      .call(d3.drag()
+        .on('start', (ev,d)=>{ if(!ev.active) sim.alphaTarget(.3).restart(); d.fx=d.x; d.fy=d.y; })
+        .on('drag', (ev,d)=>{ d.fx=ev.x; d.fy=ev.y; })
+        .on('end',  (ev,d)=>{ if(!ev.active) sim.alphaTarget(0); d.fx=null; d.fy=null; }))
+      .on('click', (ev, d) => { ev.stopPropagation(); store.selectNode(d, nodes, links); })
+      .on('dblclick', (ev,d) => { if(d.label==='movie'){ Alpine.store('api').showDetail(d.title); window.scrollTo({top:0,behavior:'smooth'}); }})
+      .on('mouseover', function(){ if(!store.selected) d3.select(this).attr('stroke-width',1.4); })
+      .on('mouseout',  function(){ if(!store.selected) d3.select(this).attr('stroke-width',0.6); });
+
+    // Etiquetas de nodo
+    const labels = g.append('g').selectAll('text.node-label').data(nodes).enter().append('text')
+      .attr('class', 'node-label')
+      .text(d => d.title)
+      .attr('font-size', 10)
+      .attr('fill', baseColors.text)
+      .attr('stroke', 'none');
+
+    sim.on('tick', () => {
+      linkSel
+        .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+
+      nodeSel
+        .attr('cx', d => d.x = clamp(d.x, 8, width-8))
+        .attr('cy', d => d.y = clamp(d.y, 8, height-8));
+
+      labels
+        .attr('x', d => d.x + 8)
+        .attr('y', d => d.y + 4);
+
+      edgeLabelSel
+        .attr('x', l => (l.source.x + l.target.x)/2 )
+        .attr('y', l => (l.source.y + l.target.y)/2 );
+    });
+
+    function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+
+    svg.on('click', () => store.clearSelection());
+
+    window.__graphRefs.nodeSel = nodeSel;
+    window.__graphRefs.linkSel = linkSel;
+    window.__graphRefs.edgeLabelSel = edgeLabelSel;
+
+    // Ajuste inicial
+    window.__graphRefs.zoomFit();
+    setTimeout(()=> window.__graphRefs.zoomFit(), 300);
+  }
+</script>
+
+<div class="max-w-6xl mx-auto p-5">
+  <!-- Header -->
+  <header class="flex items-center justify-between mb-4">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-brand to-sky-300 shadow-soft"></div>
+      <div>
+        <h1 class="font-bold tracking-wide">Movies • Neo4j Demo</h1>
+        <p class="text-text-muted text-sm">Axum · Neo4j · D3 · Tailwind · Alpine</p>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-3 text-text-muted text-sm" x-data x-init="$store.api.checkHealth(); setInterval(()=> $store.api.checkHealth(), 10000)">
+      <!-- Menú Paneles -->
+      <div x-data="{open:false}" class="relative">
+        <button @click="open=!open" class="px-3 py-2 rounded-lg border border-bg-border hover:bg-bg-elev transition flex items-center gap-2">
+          Paneles ▾
+        </button>
+        <div x-show="open" @click.outside="open=false" x-transition
+             class="absolute right-0 mt-2 w-56 bg-bg-card border border-bg-border rounded-xl shadow-soft p-2 z-20">
+          <label class="flex items-center justify-between gap-3 px-2 py-1.5">
+            <span>Búsqueda</span>
+            <input type="checkbox" x-model="$store.layout.showSearch" @change="$store.layout.ensureDefaults()" class="accent-brand">
+          </label>
+          <label class="flex items-center justify-between gap-3 px-2 py-1.5">
+            <span>Detalle</span>
+            <input type="checkbox" x-model="$store.layout.showDetail" @change="$store.layout.ensureDefaults()" class="accent-brand">
+          </label>
+          <label class="flex items-center justify-between gap-3 px-2 py-1.5">
+            <span>Grafo</span>
+            <input type="checkbox" x-model="$store.layout.showGraph" @change="$store.layout.ensureDefaults()" class="accent-brand">
+          </label>
+          <label class="flex items-center justify-between gap-3 px-2 py-1.5">
+            <span>Ayuda</span>
+            <input type="checkbox" x-model="$store.layout.showHelp" @change="$store.layout.ensureDefaults()" class="accent-brand">
+          </label>
+          <div class="h-px bg-bg-border my-2"></div>
+          <div class="flex gap-2 px-2">
+            <button class="px-2.5 py-1 rounded-lg border border-bg-border hover:bg-bg-elev transition text-xs"
+                    @click="$store.layout.showSearch=$store.layout.showDetail=$store.layout.showGraph=$store.layout.showHelp=true; $store.layout.ensureDefaults()">Mostrar todo</button>
+            <button class="px-2.5 py-1 rounded-lg border border-bg-border hover:bg-bg-elev transition text-xs"
+                    @click="$store.layout.showSearch=false; $store.layout.showDetail=false; $store.layout.showHelp=false; $store.layout.showGraph=true; $store.layout.ensureDefaults()">Solo grafo</button>
+          </div>
+        </div>
+      </div>
+
+      <span class="opacity-50">•</span>
+      <div class="flex items-center gap-2">
+        <span :class="{
+                'bg-warn' : $store.api.health==='checking' || $store.api.health==='warn',
+                'bg-ok'   : $store.api.health==='ok',
+                'bg-err'  : $store.api.health==='err'
+              }" class="inline-block w-2.5 h-2.5 rounded-full"></span>
+        <span x-text="$store.api.health==='ok' ? 'Servidor OK' : ($store.api.health==='err' ? 'Sin conexión' : 'Comprobando…')"></span>
+      </div>
+      <span class="opacity-50">•</span>
+      <a href="/metrics" target="_blank" rel="noopener" class="px-3 py-2 rounded-lg border border-bg-border hover:bg-bg-elev transition">Métricas</a>
+      <button @click="$store.ui.toggleTheme()" class="px-3 py-2 rounded-lg border border-bg-border hover:bg-bg-elev transition">🌓</button>
+    </div>
+  </header>
+
+  <!-- GRID PRINCIPAL -->
+  <div class="grid gap-4"
+       :style="{'grid-template-columns': $store.layout.showSearch ? `${$store.layout.leftWidth}px 10px 1fr` : '1fr'}">
+
+    <!-- BÚSQUEDA -->
+    <section x-show="$store.layout.showSearch"
+             class="bg-bg-card border border-bg-border rounded-2xl shadow-soft overflow-hidden" x-data>
+      <div class="border-b border-bg-border p-4">
+        <div class="flex gap-2">
+          <input x-model="$store.api.q" @keydown.enter="$store.api.search(true)" placeholder="Buscar por título…"
+                 class="w-full px-3 py-2 rounded-xl bg-bg-elev border border-bg-border outline-none focus:ring-2 focus:ring-brand/50" type="text">
+          <select x-model.number="$store.api.limit" @change="$store.api.search(true)"
+                  class="px-3 py-2 rounded-xl bg-bg-elev border border-bg-border outline-none">
+            <option value="10">10</option><option value="25" selected>25</option><option value="50">50</option>
+          </select>
+          <button @click="$store.api.search(true)" class="px-3 py-2 rounded-xl bg-brand text-white font-medium hover:opacity-90 transition">
+            <span x-show="!$store.api.loading">Buscar</span>
+            <span x-show="$store.api.loading">Buscando…</span>
+          </button>
+        </div>
+      </div>
+      <div class="p-4">
+        <template x-if="$store.api.error"><div class="text-err text-sm" x-text="$store.api.error"></div></template>
+        <div class="flex flex-col gap-2" id="results">
+          <template x-if="!$store.api.results.length && !$store.api.loading && !$store.api.error">
+            <div class="text-text-muted">Introduce un término de búsqueda.</div>
+          </template>
+          <template x-for="row in $store.api.results" :key="row.movie?.title">
+            <button type="button" @click="$store.api.showDetail(row.movie?.title || '')"
+                    class="w-full text-left p-3 rounded-xl border border-bg-border bg-bg-elev hover:bg-bg transition flex items-center justify-between">
+              <div>
+                <div class="font-semibold" x-text="row.movie?.title || '(Sin título)'"></div>
+                <div class="text-xs text-text-muted">
+                  <span x-text="row.movie?.released || ''"></span>
+                  <span x-show="row.movie?.released && row.movie?.tagline"> · </span>
+                  <span x-text="row.movie?.tagline || ''"></span>
+                </div>
+              </div>
+              <span class="text-text-muted">Ver</span>
+            </button>
+          </template>
+        </div>
+        <div class="flex gap-2 justify-end mt-3">
+          <button @click="$store.api.page=Math.max(0,$store.api.page-1); $store.api.search(false)"
+                  class="px-3 py-2 rounded-xl border border-bg-border hover:bg-bg-elev transition">‹ Anterior</button>
+          <button @click="$store.api.page++; $store.api.search(false)"
+                  class="px-3 py-2 rounded-xl border border-bg-border hover:bg-bg-elev transition">Siguiente ›</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- RESIZER VERTICAL -->
+    <div x-show="$store.layout.showSearch"
+         class="hidden lg:block cursor-col-resize" @mousedown="$store.layout.startDragCol($event)"></div>
+
+    <!-- DERECHA: DETALLE + (GRAFO|AYUDA) -->
+    <section class="bg-transparent" id="rightGrid"
+             :style="{'display':'grid','grid-template-rows': $store.layout.showDetail ? `${$store.layout.detailH}px 10px 1fr` : '1fr'}">
+
+      <!-- Detalle -->
+      <div x-show="$store.layout.showDetail"
+           class="bg-bg-card border border-bg-border rounded-2xl shadow-soft overflow-hidden p-4">
+        <template x-if="$store.api.dLoading"><div class="text-text-muted">Cargando detalle…</div></template>
+        <template x-if="$store.api.dError"><div class="text-err" x-text="$store.api.dError"></div></template>
+        <template x-if="!$store.api.detail && !$store.api.dLoading && !$store.api.dError">
+          <div class="text-text-muted">No hay ninguna película seleccionada.</div>
+        </template>
+
+        <template x-if="$store.api.detail">
+          <div>
+            <div class="text-lg font-semibold mb-0.5" x-text="$store.api.detail.title"></div>
+            <div class="text-sm text-text-muted">
+              <span x-text="$store.api.detail.released || ''"></span>
+              <span x-show="$store.api.detail.released && $store.api.detail.tagline"> · </span>
+              <span x-text="$store.api.detail.tagline || ''"></span>
+            </div>
+            <div class="flex flex-wrap gap-2 mt-2">
+              <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Votos: <strong x-text="$store.api.detail.votes || 0"></strong></span>
+              <template x-if="$store.api.detail.released">
+                <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Año: <strong x-text="$store.api.detail.released"></strong></span>
+              </template>
+            </div>
+            <div class="grid md:grid-cols-2 gap-3 mt-3">
+              <div>
+                <div class="font-semibold mb-1">Actores</div>
+                <div class="flex flex-col gap-2">
+                  <template x-for="p in ($store.api.detail.cast || []).filter(x => x.job==='acted' || x.job==='acted_in')" :key="p.name + (p.role||'')">
+                    <div class="p-3 rounded-xl border border-bg-border bg-bg-elev">
+                      <div><strong x-text="p.name"></strong>
+                        <span class="text-xs text-text-muted"> · <span x-text="p.job"></span>
+                          <template x-if="p.role && p.role.length"><span> · <span x-text="p.role.join(', ')"></span></span></template>
+                        </span>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <div>
+                <div class="font-semibold mb-1">Dirección / Otros</div>
+                <div class="flex flex-col gap-2">
+                  <template x-for="p in ($store.api.detail.cast || []).filter(x => !['acted','acted_in','directed'].includes(x.job)).concat(($store.api.detail.cast || []).filter(x => x.job==='directed'))" :key="p.name + (p.role||'')">
+                    <div class="p-3 rounded-xl border border-bg-border bg-bg-elev">
+                      <div><strong x-text="p.name"></strong>
+                        <span class="text-xs text-text-muted"> · <span x-text="p.job"></span>
+                          <template x-if="p.role && p.role.length"><span> · <span x-text="p.role.join(', ')"></span></span></template>
+                        </span>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+            <div class="mt-3">
+              <button @click="$store.api.vote()" class="px-3 py-2 rounded-xl bg-brand text-white font-medium hover:opacity-90 transition">Votar esta película</button>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- RESIZER HORIZONTAL -->
+      <div x-show="$store.layout.showDetail" class="hidden md:block cursor-row-resize" @mousedown="$store.layout.startDragRow($event)"></div>
+
+      <!-- Bloque inferior -->
+      <div id="bottomGrid"
+           :style="{'display':'grid','grid-template-columns': ($store.layout.showGraph && $store.layout.showHelp) ? `${$store.layout.graphW}px 10px 1fr` : '1fr'}"
+           class="gap-4">
+
+        <!-- GRAFO -->
+        <div x-show="$store.layout.showGraph"
+             class="bg-bg-card border border-bg-border rounded-2xl shadow-soft overflow-hidden relative flex flex-col">
+          <div class="p-3 flex items-center justify-between gap-3 flex-wrap">
+            <div class="flex items-center gap-3">
+              <h3 class="font-semibold">Grafo</h3>
+              <div id="graph-counts" class="text-xs text-text-muted"></div>
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <div class="flex items-center gap-2">
+                <label class="text-sm text-text-muted">Límite</label>
+                <select x-model.number="$store.api.gLimit" @change="$store.api.loadGraph()"
+                        class="px-2 py-1.5 rounded-xl bg-bg-elev border border-bg-border outline-none">
+                  <option value="100">100</option><option value="200" selected>200</option><option value="500">500</option><option value="1000">Todo</option>
+                </select>
+              </div>
+
+              <div class="flex items-center gap-2">
+                <label class="text-sm text-text-muted">Distancia</label>
+                <input type="range" min="30" max="180" step="5" x-model.number="$store.api.linkDist"
+                       @change="$store.api.applyGraphFilters()" class="w-36 accent-brand"/>
+              </div>
+
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" x-model="$store.api.dimOthers" @change="$store.api.applyGraphFilters()" class="toggle">
+                Atenuar no vecinos
+              </label>
+
+              <label class="flex items-center gap-2 text-sm">
+                <input type="checkbox" x-model="$store.api.showEdgeLabels" @change="$store.api.applyGraphFilters()" class="toggle">
+                Etiquetas relación
+              </label>
+
+              <div class="h-6 w-px bg-bg-border"></div>
+
+              <div class="flex items-center gap-2">
+                <label class="text-sm text-text-muted">Profundidad</label>
+                <input type="range" min="1" max="6" step="1" x-model.number="$store.api.depth"
+                       :disabled="!$store.api.depthFromSelection"
+                       @change="$store.api.applyGraphFilters()"
+                       class="w-28 accent-brand">
+                <span class="text-xs" x-text="$store.api.depthFromSelection ? $store.api.depth : '—'"></span>
+              </div>
+              <label class="flex items-center gap-2 text-sm" title="Limita el grafo a N saltos desde el nodo seleccionado">
+                <input type="checkbox" x-model="$store.api.depthFromSelection" @change="$store.api.applyGraphFilters()" class="toggle">
+                Desde selección
+              </label>
+
+              <button @click="$store.api.refit()" class="px-3 py-1.5 rounded-xl border border-bg-border hover:bg-bg-elev transition">Ajustar</button>
+              <button @click="$store.api.loadGraph()" class="px-3 py-1.5 rounded-xl border border-bg-border hover:bg-bg-elev transition">Actualizar</button>
+            </div>
+          </div>
+
+          <!-- Leyendas -->
+          <div class="px-3 pb-1">
+            <div>
+              <div class="text-xs text-text-muted mb-1">Tipos de nodo</div>
+              <div id="legend-nodes" class="flex flex-wrap items-center gap-2"></div>
+            </div>
+            <div class="mt-2">
+              <div class="text-xs text-text-muted mb-1">Tipos de relación</div>
+              <div id="legend-rels" class="flex flex-wrap items-center gap-2"></div>
+            </div>
+          </div>
+
+          <!-- Área grafo -->
+          <div id="graph"
+               class="flex-1 min-h-[360px] rounded-2xl border-t border-bg-border overflow-hidden relative z-0"
+               style="isolation:isolate"></div>
+
+          <!-- Panel de selección -->
+          <div x-show="$store.api.selectedInfo" x-transition
+               class="absolute top-2 right-2 max-w-[360px] w-[92%] sm:w-[360px] bg-bg-card border border-bg-border rounded-xl shadow-soft p-3 z-10 pointer-events-auto"
+               @click.stop>
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <div class="text-xs text-text-muted">
+                  <span class="inline-flex items-center gap-2">
+                    <span class="w-3 h-3 rounded-full inline-block"
+                          :style="`background:${$store.api.nodeTypeColors.get($store.api.selectedInfo?.label)||'#93c5fd'}`"></span>
+                    <span x-text="$store.api.selectedInfo?.label || 'nodo'"></span>
+                  </span>
+                </div>
+                <div class="font-semibold truncate" x-text="$store.api.selectedInfo?.title"></div>
+              </div>
+              <button class="text-text-muted hover:text-text-base" @click="$store.api.clearSelection()" title="Cerrar">✕</button>
+            </div>
+            <div class="mt-2 text-sm">
+              <div class="flex flex-wrap gap-2">
+                <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Grado: <strong x-text="$store.api.selectedInfo?.degree"></strong></span>
+                <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">Componente: <strong x-text="$store.api.selectedInfo?.compSize"></strong> nodos</span>
+              </div>
+            </div>
+
+            <!-- NUEVO: Propiedades del nodo seleccionado -->
+            <div class="mt-3">
+              <div class="font-semibold mb-1">Propiedades</div>
+              <div class="max-h-40 overflow-auto pr-1 text-xs border border-bg-border rounded-lg">
+                <div class="p-2">
+                  <template x-if="!$store.api.selected?.props || Object.keys($store.api.selected?.props||{}).length===0">
+                    <div class="text-text-muted">Sin propiedades.</div>
+                  </template>
+                  <template x-for="[k,v] in Object.entries($store.api.selected?.props || {})" :key="k">
+                    <div class="flex justify-between gap-2 py-1 border-b border-bg-border/40 last:border-b-0">
+                      <span class="text-text-muted truncate" x-text="k"></span>
+                      <span class="truncate" :title="typeof v==='object'? JSON.stringify(v): String(v)" x-text="$store.api.fmt(v)"></span>
+                    </div>
+                  </template>
+                </div>
+              </div>
+            </div>
+
+            <div class="mt-3 grid grid-cols-1 gap-2">
+              <template x-for="(arr, label) in $store.api.selectedInfo?.neighborsGrouped" :key="label">
+                <div>
+                  <div class="text-xs mb-1 inline-flex items-center gap-2">
+                    <span class="w-2.5 h-2.5 rounded-full inline-block"
+                          :style="`background:${$store.api.nodeTypeColors.get(label)||'#93c5fd'}`"></span>
+                    <span x-text="label"></span>
+                    <span class="opacity-60">(<span x-text="arr.length"></span>)</span>
+                  </div>
+                  <div class="max-h-36 overflow-auto space-y-1 pr-1">
+                    <template x-for="n in arr.slice(0,30)" :key="n.title">
+                      <div class="text-sm truncate">
+                        <button class="hover:underline"
+                                @click="if(label==='movie'){ $store.api.showDetail(n.title); window.scrollTo({top:0,behavior:'smooth'}); }"
+                                :title="label==='movie' ? 'Ver detalle' : ''"
+                                x-text="n.title"></button>
+                      </div>
+                    </template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </div>
+
+          <p class="text-text-muted text-xs p-3">Clic para ver información y propiedades. Doble clic en una película abre el detalle. Rueda = zoom, arrastra el fondo = pan.</p>
+        </div>
+
+        <!-- RESIZER VERTICAL INTERNO -->
+        <div x-show="$store.layout.showGraph && $store.layout.showHelp"
+             class="hidden xl:block cursor-col-resize" @mousedown="$store.layout.startDragInnerCol($event)"></div>
+
+        <!-- Ayuda -->
+        <div x-show="$store.layout.showHelp"
+             class="bg-bg-card border border-bg-border rounded-2xl shadow-soft overflow-hidden p-4">
+          <h3 class="font-semibold mb-2">Ayuda / Atajos</h3>
+          <ul class="list-disc list-inside text-sm space-y-1">
+            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">G</kbd> refrescar grafo</li>
+            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">/</kbd> enfocar búsqueda</li>
+            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">Enter</kbd> iniciar búsqueda</li>
+            <li><kbd class="px-1.5 py-0.5 rounded-md bg-bg-elev border border-bg-border">Doble clic</kbd> detalle de película</li>
+          </ul>
+          <h4 class="font-semibold mt-4 mb-2">Endpoints</h4>
+          <div class="flex flex-wrap gap-2">
+            <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/search?q=&amp;offset=&amp;limit=</code></span>
+            <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/movie/:title</code></span>
+            <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">POST <code>/movie/vote/:title</code></span>
+            <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/graph?limit=</code></span>
+            <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/health</code></span>
+            <span class="px-2 py-1 rounded-full text-xs bg-chip-bg text-chip-text">GET <code>/metrics</code></span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </div>
+
+  <footer class="mt-5 flex items-center justify-between text-text-muted text-xs">
+    <div>© <span x-text="new Date().getFullYear()"></span> Movies Demo</div>
+    <div>Axum · Neo4j · D3.js · Tailwind · Alpine</div>
+  </footer>
+</div>
+
+<script>
+  // Atajos
+  document.addEventListener('keydown', (e) => {
+    const api = Alpine.store('api'); if(!api) return;
+    if(e.key === '/'){ e.preventDefault(); document.querySelector('input[x-model="$store.api.q"]')?.focus(); }
+    if(e.key.toLowerCase()==='g'){ e.preventDefault(); api.loadGraph(); }
+    if(e.key==='Enter' && document.activeElement === document.querySelector('input[x-model="$store.api.q"]')){
+      e.preventDefault(); api.search(true);
+    }
+  });
+  // Carga inicial
+  document.addEventListener('alpine:init', () => { setTimeout(()=> Alpine.store('api')?.loadGraph(), 0); });
+</script>
+
+</body>
+</html>
+
+
+
+
+
