@@ -1,5 +1,7 @@
 Pruebas de concepto usando Rust, Axum, Neo4j y D3
 
+[![Documentation](https://img.shields.io/badge/docs-latest-blue.svg)](https://ansonTGN.github.io/Rust-Neo4j/)
+
 # Movies • Axum + Neo4j (Bolt) + D3
 
 Demo full-stack en Rust que expone una API HTTP (Axum) contra Neo4j (driver `neo4rs`) y un frontend estático con **D3** para explorar el grafo de películas/personas.
@@ -69,7 +71,7 @@ cargo run --release
 
 Abre:
 
-* **Frontend**: [http://localhost:8080/](http://localhost:8080/)
+* **Frontend**: [http://localhost:8080/](http://127.0.0.1:8080/index.html)
 * **Swagger UI**: [http://localhost:8080/docs](http://localhost:8080/docs)
 * **OpenAPI JSON**: [http://localhost:8080/api-docs/openapi.json](http://localhost:8080/api-docs/openapi.json)
 * **Métricas Prometheus**: [http://localhost:8080/metrics](http://localhost:8080/metrics)
